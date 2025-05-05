@@ -52,42 +52,60 @@ def log_results_to_csv(start_time, end_time, strategy_name, symbol, interval, in
     except Exception as e:
         logger.error(f"Failed to write results to {RESULTS_FILE}: {e}")
 
-def run_bot(strategy_name, interval):
-    """Main bot execution loop"""
-    logger.info(f"Starting bot with strategy '{strategy_name}' on interval '{interval}'")
-
-    # Initialize client
-    client = BinanceFuturesClient()
-    if not client.client:
-        logger.error("Failed to initialize Binance client. Check API keys and connection.")
-        return
-
-    # Set symbol in client (can be overridden by strategy if needed)
-    client.symbol = 'BTCUSDT' # Default or get from args
-
-    # Verify connectivity and get initial balance
+def run_bot(strategy_name, symbol, interval, once):
+    """Main function to run the trading bot."""
+    logger.info(f"Starting bot for {symbol} on {interval} interval with strategy '{strategy_name}'.")
+    
+    # Load environment variables from .env file
+    load_dotenv() 
+    
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_SECRET_KEY")
+    
+    # --- Read TRADE_NOTIONAL from .env --- 
+    trade_notional_str = os.getenv('TRADE_NOTIONAL', '200') # Default to '200' if not found
     try:
-        initial_balance_info = client.get_account_balance()
-        if initial_balance_info and 'USDT' in initial_balance_info:
-            initial_balance = initial_balance_info['USDT']
-            logger.info(f"Initial Account USDT balance: {initial_balance:.2f}")
-        else:
-            logger.error("Could not retrieve initial USDT balance. Exiting.")
-            return
-    except Exception as e:
-        logger.error(f"Failed to connect or get initial balance: {e}")
+        trade_notional = float(trade_notional_str)
+        logger.info(f"Using TRADE_NOTIONAL value: {trade_notional}")
+    except ValueError:
+        logger.error(f"Invalid TRADE_NOTIONAL value '{trade_notional_str}' in .env file. Using default 200.")
+        trade_notional = 200.0
+    # -------------------------------------
+
+    if not api_key or not api_secret:
+        logger.error("Binance API key or secret key not found in environment variables.")
         return
+
+    # Initialize Binance Client
+    client = BinanceFuturesClient(api_key, api_secret, symbol=symbol)
+    if not client.test_connection():
+        logger.error("Failed to connect to Binance API.")
+        return
+        
+    # Fetch initial balance for P&L tracking
+    initial_balance = client.get_account_usdt_balance()
+    if initial_balance is None:
+        logger.error("Could not fetch initial account balance. Exiting.")
+        return
+    logger.info(f"Initial Account USDT balance: {initial_balance:.2f}")
+    start_time = datetime.now()
 
     # Create strategy instance using the factory function
-    strategy = get_strategy(strategy_name, client, interval)
+    # Pass the trade_notional value to the factory
+    strategy_kwargs = {}
+    if strategy_name.lower() == 'proyecto':
+        strategy_kwargs['trade_notional'] = trade_notional
+        # Pass model/scaler paths if they become configurable
+        # strategy_kwargs['model_path'] = os.getenv('MODEL_PATH', 'proyecto_model.joblib')
+        # strategy_kwargs['scaler_path'] = os.getenv('SCALER_PATH', 'feature_scaler.joblib')
+
+    strategy = get_strategy(strategy_name, client=client, interval=interval, **strategy_kwargs)
+
     if not strategy:
-        logger.error(f"Could not create strategy instance for '{strategy_name}'. Exiting.")
+        logger.error(f"Could not create strategy '{strategy_name}'. Exiting.")
         return
 
-    # --- Main Loop ---
-    start_time = datetime.now()
-    final_balance = initial_balance # Initialize final balance
-
+    # Main loop
     try:
         while True:
             logger.info(f"--- Running strategy cycle ({datetime.now()}) ---")
@@ -95,41 +113,40 @@ def run_bot(strategy_name, interval):
                 strategy.execute()
             except Exception as e:
                 logger.error(f"Error during strategy execution: {e}", exc_info=True)
-                # Decide if error is critical enough to stop the bot
-                time.sleep(60) # Wait a minute before retrying after an error
+            
+            if once:
+                logger.info("Running in 'once' mode. Exiting after one cycle.")
+                break
 
-            # Wait for the next candle/interval
-            wait_seconds = utils.calculate_wait_time(interval)
-            logger.info(f"Waiting {wait_seconds:.2f} seconds for next {interval} candle")
-            time.sleep(wait_seconds)
+            # Wait for the next candle
+            try:
+                wait_seconds = utils.calculate_wait_time(interval)
+                logger.info(f"Waiting {wait_seconds:.2f} seconds for next {interval} candle")
+                time.sleep(wait_seconds)
+            except ValueError as e:
+                logger.error(f"Error calculating wait time: {e}. Waiting 60 seconds as fallback.")
+                time.sleep(60)
 
     except KeyboardInterrupt:
-        logger.info("Bot stopped manually (KeyboardInterrupt).")
-    
+        logger.info("Bot stopped manually by user (KeyboardInterrupt).")
     finally:
-        # --- Log Results ---
-        logger.info("--- Bot shutting down. Fetching final balance... ---")
-        try:
-            final_balance_info = client.get_account_balance()
-            if final_balance_info and 'USDT' in final_balance_info:
-                 final_balance = final_balance_info['USDT']
-                 logger.info(f"Final Account USDT balance: {final_balance:.2f}")
-            else:
-                 logger.warning("Could not retrieve final USDT balance. Using last known or initial value for PnL.")
-                 # Use the value from the start if final couldn't be fetched
-                 final_balance = initial_balance 
-
-            pnl = final_balance - initial_balance
-            logger.info(f"Trading Session P&L: {pnl:.2f} USDT")
-            
-            # Log results to CSV
-            end_time = datetime.now()
-            log_results_to_csv(start_time, end_time, strategy_name, client.symbol, interval, initial_balance, final_balance)
-            
-        except Exception as e:
-            logger.error(f"Error fetching final balance or logging results: {e}")
-            
-        logger.info("--- Bot Shutdown Complete ---")
+        # Log results on exit (normal or interrupt)
+        logger.info("--- Bot shutting down --- ")
+        final_balance = client.get_account_usdt_balance()
+        if final_balance is not None and initial_balance is not None:
+             logger.info(f"Final Account USDT balance: {final_balance:.2f}")
+             end_time = datetime.now()
+             log_results_to_csv(start_time, end_time, strategy_name, symbol, interval, initial_balance, final_balance)
+        else:
+             logger.error("Could not fetch final balance for P&L calculation.")
+        # Optional: Close any open positions on exit?
+        # current_pos = client.get_position_amount(symbol)
+        # if current_pos != 0:
+        #     logger.info(f"Closing open position ({current_pos}) on exit...")
+        #     side = 'BUY' if current_pos < 0 else 'SELL'
+        #     qty = abs(current_pos)
+        #     client.place_order(symbol, side, 'MARKET', quantity=qty)
+        logger.info("Bot finished.")
 
 def main():
     """Main entry point"""
@@ -138,26 +155,18 @@ def main():
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Binance Futures Trading Bot')
-    parser.add_argument('--strategy', type=str, default='proyecto', choices=['sma', 'rsi', 'proyecto', 'ml'],
-                        help='Trading strategy (sma, rsi, proyecto, ml)')
+    parser.add_argument('--strategy', type=str, default='proyecto', choices=['sma', 'rsi', 'proyecto'],
+                        help='Trading strategy to use')
+    parser.add_argument('--symbol', type=str, default='BTCUSDT', 
+                        help='Trading pair symbol (e.g., BTCUSDT)')
     parser.add_argument('--interval', type=str, default='15m',
                         help='Trading interval (e.g., 1m, 5m, 15m, 1h)')
-    parser.add_argument('--once', action='store_true',
-                        help='Run the strategy once instead of continuously')
-    parser.add_argument('--report', action='store_true',
-                        help='Generate a PnL report from trade history')
-    
+    parser.add_argument('--once', action='store_true', 
+                        help='Run the strategy logic only once and exit.')
+
     args = parser.parse_args()
-    
-    if args.report:
-        # Generate PnL report
-        trades = utils.get_trade_history()
-        total_pnl = utils.calculate_pnl(trades)
-        utils.plot_trade_history(trades)
-        logger.info(f"Total PnL: {total_pnl}")
-    else:
-        # Run the trading bot
-        run_bot(args.strategy, args.interval)
+
+    run_bot(args.strategy, args.symbol, args.interval, args.once)
 
 if __name__ == "__main__":
     main() 

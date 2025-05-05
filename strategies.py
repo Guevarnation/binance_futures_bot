@@ -293,12 +293,15 @@ class ProyectoStrategy(Strategy):
     Loads a pre-trained model ('proyecto_model.joblib' by default) to make decisions.
     Features used (example): RSI, SMA_short, SMA_long, Fear & Greed Index.
     """
-    def __init__(self, client: BinanceFuturesClient, symbol='BTCUSDT', interval='15m', model_path='proyecto_model.joblib', scaler_path='feature_scaler.joblib'):
+    def __init__(self, client: BinanceFuturesClient, symbol='BTCUSDT', interval='15m', 
+                 model_path='proyecto_model.joblib', scaler_path='feature_scaler.joblib', 
+                 trade_notional: float = 200.0):
         super().__init__(client)
         self.symbol = symbol
         self.interval = interval
         self.model_path = model_path
         self.scaler_path = scaler_path
+        self.trade_notional = float(trade_notional)
         self.model = self._load_model()
         self.scaler = self._load_scaler()
         self.fng_url = "https://api.alternative.me/fng/"
@@ -331,6 +334,12 @@ class ProyectoStrategy(Strategy):
              logger.warning(f"Model not loaded from {self.model_path}. Strategy will not trade.")
         if not self.scaler:
              logger.warning(f"Scaler not loaded from {self.scaler_path}. Strategy cannot scale features and will not trade.")
+
+        # Determine minimum data points needed based on longest indicator + lag
+        # Example: SMA_LONG_PERIOD=50, ATR_PERIOD=14, MACD_SLOW=26 -> Longest is 50
+        # Max lag = 3. Need at least 50 + 3 = 53 points for calculation. Add buffer.
+        self.min_data_points = max(self.feature_params['sma_long'], self.feature_params['atr_period'], self.feature_params['macd_slow'], self.feature_params['rsi_period']) + max(self.lag_periods) + 10 # Add buffer
+        logger.info(f"Minimum data points needed for feature calculation: {self.min_data_points}")
 
     def _load_model(self):
         """Loads the pre-trained Random Forest model."""
@@ -535,7 +544,7 @@ class ProyectoStrategy(Strategy):
 
         # --- Trade Execution Logic ---
         # Calculate quantity based on fixed notional value to meet minimums
-        target_notional = 200 # Increased target notional to ensure rounded quantity meets minimum
+        target_notional = self.trade_notional
 
         # Get current price for quantity calculation
         try:
@@ -612,21 +621,21 @@ class ProyectoStrategy(Strategy):
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # 1. Base Indicators
-        df['rsi'] = ta.rsi(df['close'], length=self.rsi_period)
-        df['sma_short'] = ta.sma(df['close'], length=self.sma_short_period)
-        df['sma_long'] = ta.sma(df['close'], length=self.sma_long_period)
+        df['rsi'] = ta.rsi(df['close'], length=self.feature_params['rsi_period'])
+        df['sma_short'] = ta.sma(df['close'], length=self.feature_params['sma_short'])
+        df['sma_long'] = ta.sma(df['close'], length=self.feature_params['sma_long'])
         df['sma_diff'] = df['sma_short'] - df['sma_long']
-        macd = ta.macd(df['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+        macd = ta.macd(df['close'], fast=self.feature_params['macd_fast'], slow=self.feature_params['macd_slow'], signal=self.feature_params['macd_signal'])
         if macd is not None and not macd.empty:
-            df['macd_line'] = macd[f'MACD_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
-            df['macd_hist'] = macd[f'MACDh_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
-            df['macd_signal'] = macd[f'MACDs_{self.macd_fast}_{self.macd_slow}_{self.macd_signal}']
+            df['macd_line'] = macd[f'MACD_{self.feature_params["macd_fast"]}_{self.feature_params["macd_slow"]}_{self.feature_params["macd_signal"]}']
+            df['macd_hist'] = macd[f'MACDh_{self.feature_params["macd_fast"]}_{self.feature_params["macd_slow"]}_{self.feature_params["macd_signal"]}']
+            df['macd_signal'] = macd[f'MACDs_{self.feature_params["macd_fast"]}_{self.feature_params["macd_slow"]}_{self.feature_params["macd_signal"]}']
         else:
             df['macd_line'] = np.nan
             df['macd_hist'] = np.nan
             df['macd_signal'] = np.nan
             
-        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=self.atr_period)
+        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=self.feature_params['atr_period'])
         df['volume_change'] = df['volume'].pct_change() * 100
         df['volume_change'].fillna(0, inplace=True) # Fill first NaN
 

@@ -46,11 +46,13 @@ Sigue estos pasos para configurar y ejecutar el bot:
     ```
 
 4.  **Crear Archivo `.env`:**
-    Crea un archivo llamado `.env` en la raíz del proyecto. Este archivo almacenará tus claves de API de Binance. **¡IMPORTANTE!** Para empezar, usa claves generadas en la [Binance Testnet](https://testnet.binancefuture.com/) para no arriesgar dinero real.
+    Crea un archivo llamado `.env` en la raíz del proyecto. Este archivo almacenará tus claves de API de Binance y el tamaño deseado para las operaciones. **¡IMPORTANTE!** Para empezar, usa claves generadas en la [Binance Testnet](https://testnet.binancefuture.com/) para no arriesgar dinero real.
     ```dotenv
     BINANCE_API_KEY=TU_API_KEY_DE_TESTNET_AQUI
     BINANCE_SECRET_KEY=TU_SECRET_KEY_DE_TESTNET_AQUI
+    TRADE_NOTIONAL=200 # Valor nocional deseado por operación en USDT (ej. 200)
     ```
+    _(El bot usará 200 USDT como valor por defecto si `TRADE_NOTIONAL` no se encuentra o no es válido)._
 
 ## Entrenamiento del Modelo (`train_model.py`)
 
@@ -186,16 +188,16 @@ Una vez que el entrenamiento haya finalizado y los archivos `proyecto_model.jobl
 
 1.  **Propósito:** El script `main.py` ejecuta el ciclo principal del bot:
 
-    - Carga las claves de API desde `.env`.
+    - Carga las claves de API y el `TRADE_NOTIONAL` desde `.env`.
     - Se conecta a Binance Futures.
-    - Instancia la estrategia seleccionada (en este caso, `ProyectoStrategy`).
+    - Instancia la estrategia seleccionada (en este caso, `ProyectoStrategy`), pasándole el valor nocional configurado.
       - `ProyectoStrategy` carga el modelo `proyecto_model.joblib` y el scaler `feature_scaler.joblib`.
     - Entra en un bucle infinito (a menos que se use `--once`):
       - Obtiene los datos de mercado más recientes.
       - Calcula las características necesarias.
       - **Escala las características** usando el `feature_scaler.joblib` guardado.
       - Usa el modelo cargado (`proyecto_model.joblib`) para predecir la acción (1, -1, o 0).
-      - Ejecuta órdenes de compra/venta en Binance Testnet si la señal es 1 o -1 y no hay una posición abierta en la misma dirección (la lógica de tamaño de orden y TP/SL es básica y debe mejorarse).
+      - Ejecuta órdenes de compra/venta en Binance Testnet si la señal es 1 o -1 y no hay una posición abierta en la misma dirección. El tamaño de la orden se calcula para que su valor nocional sea aproximadamente igual al `TRADE_NOTIONAL` configurado.
       - Espera hasta la siguiente vela (según el intervalo, ej. 15m).
 
 2.  **Ejecutar el Bot:**
