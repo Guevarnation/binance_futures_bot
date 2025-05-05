@@ -1,0 +1,11 @@
+python-binance>=1.0.19
+pandas>=2.1.0
+numpy>=1.26.0
+python-dotenv>=1.0.0
+websocket-client>=1.6.1
+ccxt>=3.0.88
+matplotlib>=3.8.0
+requests
+pandas-ta 
+scikit-learn>=1.0
+joblib>=1.0 
