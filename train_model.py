@@ -36,6 +36,7 @@ SYMBOL = 'BTCUSDT'
 INTERVAL = Client.KLINE_INTERVAL_15MINUTE # Use interval constants from the library
 KLINE_START_DATE = "1 Jan, 2022" # How far back to fetch data (adjust as needed)
 KLINE_END_DATE = "1 May, 2025"   # Up to when (adjust as needed)
+INTERVAL_MINUTES = 15 # Define interval duration in minutes for Sharpe calculation
 
 # Feature parameters
 RSI_PERIOD = 14
@@ -216,6 +217,9 @@ def main():
 
     # 4. Create Target Variable
     df_merged = create_target(df_merged, lookahead=TARGET_LOOKAHEAD, threshold=TARGET_THRESHOLD)
+    
+    # Store future returns before dropping NaNs, aligned with the index
+    future_returns_series = df_merged['future_return'].copy()
 
     # 5. Prepare Data for Model
     logger.info("Preparing data for training...")
@@ -230,9 +234,10 @@ def main():
     features = base_features + lagged_feature_names
     logger.info(f"Using {len(features)} features: {features}")
 
-    df_final = df_merged[features + ['target']].copy()
+    # Include future_return temporarily for alignment before dropping NaNs
+    df_final = df_merged[features + ['target', 'future_return']].copy()
     
-    # Drop rows with NaN values (more NaNs expected due to lagging)
+    # Drop rows with NaN values
     initial_rows = len(df_final)
     df_final.dropna(inplace=True)
     dropped_rows = initial_rows - len(df_final)
@@ -244,6 +249,8 @@ def main():
         
     X = df_final[features]
     y = df_final['target']
+    # Keep future returns aligned with X and y after dropping NaNs
+    future_returns_aligned = df_final['future_return'] 
 
     # Check if target classes are imbalanced
     target_counts = y.value_counts()
@@ -256,8 +263,10 @@ def main():
     else:
          target_names=['Sell (-1)', 'Hold (0)', 'Buy (1)']
 
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    # Split data into training and testing sets, including future returns for test set evaluation
+    X_train, X_test, y_train, y_test, future_returns_test = train_test_split(
+        X, y, future_returns_aligned, test_size=0.2, random_state=42, stratify=y
+    )
     logger.info(f"Training set size: {len(X_train)}, Test set size: {len(X_test)}")
 
     # --- ADD SCALING ---
@@ -314,7 +323,7 @@ def main():
 
     # 7. Evaluate Final Model on Test Set
     logger.info("Evaluating best model on the (scaled) test set...")
-    y_pred = best_model.predict(X_test_scaled) # Predict on scaled test data
+    y_pred = best_model.predict(X_test_scaled) 
     
     accuracy = accuracy_score(y_test, y_pred)
     try:
@@ -328,6 +337,51 @@ def main():
     logger.info(f"Test Set Accuracy (Tuned Model): {accuracy:.4f}")
     logger.info(f"Classification Report:\n{report}")
     logger.info(f"Confusion Matrix:\n{matrix}")
+
+    # --- Calculate Simulated ROI and Sharpe Ratio --- 
+    logger.info("Calculating simulated performance metrics on test set...")
+    # Create a DataFrame for easier calculation
+    results_df = pd.DataFrame({'y_true': y_test, 'y_pred': y_pred, 'future_return': future_returns_test})
+    
+    # Calculate strategy returns based on prediction
+    # Assumes entering position based on signal and holding for TARGET_LOOKAHEAD periods
+    results_df['strategy_return'] = np.select(
+        [
+            results_df['y_pred'] == 1,  # Predicted Buy
+            results_df['y_pred'] == -1 # Predicted Sell
+        ],
+        [
+            results_df['future_return'],      # Gain if price goes up
+            -results_df['future_return']     # Gain if price goes down (short sell)
+        ],
+        default=0 # Hold signal means zero return for this period
+    )
+
+    # Calculate Cumulative Strategy Returns (ignoring compounding for simplicity here)
+    # More accurate would be (1 + strategy_return).cumprod() - 1 for compounded ROI
+    total_simulated_pnl = results_df['strategy_return'].sum()
+    cumulative_strategy_returns = (1 + results_df['strategy_return']).cumprod() - 1
+    total_simulated_roi = cumulative_strategy_returns.iloc[-1] * 100 # As percentage
+
+    # Calculate Sharpe Ratio (Annualized)
+    mean_return = results_df['strategy_return'].mean()
+    std_dev_return = results_df['strategy_return'].std()
+    
+    # Calculate annualization factor
+    periods_per_year = (365 * 24 * 60) / INTERVAL_MINUTES # Adjust if data isn't 24/7
+    annualization_factor = np.sqrt(periods_per_year)
+    
+    sharpe_ratio = 0
+    if std_dev_return is not None and std_dev_return != 0:
+        # Assuming risk-free rate is 0
+        sharpe_ratio = (mean_return / std_dev_return) * annualization_factor
+    else:
+        logger.warning("Standard deviation of strategy returns is zero. Cannot calculate Sharpe Ratio.")
+
+    logger.info(f"Simulated Total PnL (sum of future returns based on prediction): {total_simulated_pnl:.4f}")
+    logger.info(f"Simulated Total ROI (compounded %): {total_simulated_roi:.2f}%)")
+    logger.info(f"Simulated Annualized Sharpe Ratio (Risk-Free Rate=0): {sharpe_ratio:.2f}")
+    # -------------------------------------------------
 
     # Feature Importance (from the best model)
     try:

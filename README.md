@@ -79,6 +79,62 @@ Antes de poder ejecutar el bot con la estrategia `proyecto`, necesitas entrenar 
     ```
     Este proceso puede tardar varios minutos debido a la optimización de hiperparámetros (`RandomizedSearchCV`). Revisa los logs en la terminal y en `logs/training.log`.
 
+## Proceso de Desarrollo del Modelo (Random Forest)
+
+Esta sección detalla los pasos seguidos para construir y evaluar el modelo de Random Forest utilizado en la estrategia `proyecto`, alineándose con las fases requeridas en el proyecto integrador.
+
+### 1. Definición y Planificación
+
+Se seleccionó la pista de **"Bot de trading automático"** como enfoque principal. El objetivo fue entrenar un modelo de clasificación (Random Forest) para predecir señales de trading (Comprar/Mantener/Vender) para el par BTCUSDT en un intervalo de 15 minutos, utilizando datos históricos de Binance y el índice "Fear & Greed". Se eligió Random Forest como primer modelo a implementar por su robustez, buen rendimiento general en problemas de clasificación y su capacidad para manejar features diversas y no lineales, además de ser uno de los modelos explícitamente sugeridos.
+
+### 2. Recolección y Preparación de Datos
+
+- **Datos de Mercado:** Se utilizó la librería `python-binance` para descargar datos históricos de Klines (velas) para BTCUSDT con intervalo de 15 minutos desde Binance, abarcando desde el 1 de enero de 2022 hasta la fecha actual (configurable en `train_model.py`). Estos datos incluyen precios de apertura, máximo, mínimo, cierre y volumen.
+- **Índice Fear & Greed (F&G):** Se obtuvo el historial del índice desde la API pública de `alternative.me`. Este índice se considera una feature de sentimiento del mercado.
+- **Limpieza y Fusión:**
+  - Los datos de Klines se limpiaron convirtiendo columnas a tipos numéricos.
+  - Los datos de F&G (diarios) se fusionaron con los datos de Klines (15 minutos) utilizando la fecha. Se aplicó `forward fill` (`ffill()`) para asignar el valor de F&G más reciente a cada vela de 15 minutos dentro del mismo día.
+  - Se eliminaron filas iniciales con valores `NaN` resultantes del cálculo de indicadores técnicos o lags.
+
+### 3. Ingeniería de Características (Feature Engineering)
+
+Se crearon diversas características técnicas y de sentimiento para alimentar al modelo, basadas en prácticas comunes de análisis técnico:
+
+- **Indicadores Técnicos:**
+  - `RSI (14)`: Mide la magnitud de los cambios recientes de precios para evaluar condiciones de sobrecompra o sobreventa.
+  - `SMA_diff`: Diferencia entre la media móvil simple corta (20 periodos) y larga (50 periodos), indicando tendencias a corto vs largo plazo.
+  - `MACD (12, 26, 9)`: Indicador de momento que sigue tendencias (línea MACD, línea de señal, histograma).
+  - `ATR (14)`: Mide la volatilidad del mercado.
+  - `volume_change`: Cambio porcentual en el volumen, indicando la fuerza de un movimiento de precio.
+- **Sentimiento:**
+  - `fear_and_greed`: Valor numérico del índice F&G.
+- **Características Desfasadas (Lags):** Para dar contexto histórico al modelo, se añadieron los valores de `RSI`, `SMA_diff`, `MACD Histogram`, `ATR` y `volume_change` de los 1, 2 y 3 periodos anteriores.
+
+### 4. Definición de la Variable Objetivo (`target`)
+
+Se optó por un enfoque de clasificación con tres clases (Comprar=1, Mantener=0, Vender=-1). La señal se determinó comparando el precio de cierre actual con el precio `TARGET_LOOKAHEAD` (10 periodos de 15min) en el futuro. Si el retorno futuro superaba un `TARGET_THRESHOLD` (0.2%), se asignaba 1 (Comprar); si era menor que -0.2%, se asignaba -1 (Vender); de lo contrario, 0 (Mantener). Estos parámetros se ajustaron experimentalmente para buscar un balance entre las clases.
+
+### 5. Desarrollo del Modelo (Random Forest)
+
+- **Escalado de Características:** Se aplicó `StandardScaler` de `scikit-learn` a todas las features antes del entrenamiento. Esto normaliza los datos (media 0, desviación estándar 1), lo cual es crucial para muchos algoritmos de ML y puede mejorar el rendimiento y la convergencia, especialmente si se usaran otros modelos como Redes Neuronales o KNN posteriormente. El scaler entrenado se guarda (`feature_scaler.joblib`) para usarlo consistentemente en las predicciones en vivo.
+- **Ajuste de Hiperparámetros:** Se utilizó `RandomizedSearchCV` de `scikit-learn`. Esta técnica prueba combinaciones aleatorias de hiperparámetros (como `n_estimators`, `max_depth`, `min_samples_split`, etc.) dentro de rangos definidos y utiliza validación cruzada (3 folds) para encontrar la combinación que maximiza la métrica de evaluación seleccionada (en este caso, `accuracy`). Es más eficiente que `GridSearchCV` cuando el espacio de búsqueda es grande. Se usó `class_weight='balanced'` para mitigar el impacto de clases desbalanceadas.
+- **Entrenamiento Final:** El modelo final se entrenó utilizando los mejores hiperparámetros encontrados por `RandomizedSearchCV` sobre todo el conjunto de datos de entrenamiento escalado.
+
+### 6. Evaluación Cuantitativa
+
+El rendimiento del modelo entrenado se evaluó en el conjunto de prueba (datos no vistos durante el entrenamiento) utilizando las siguientes métricas:
+
+- **Accuracy:** Porcentaje total de predicciones correctas.
+- **Classification Report:** Incluye:
+  - **Precision:** De todas las veces que el modelo predijo una clase, ¿cuántas veces acertó? (TP / (TP + FP))
+  - **Recall:** De todas las instancias reales de una clase, ¿cuántas identificó correctamente el modelo? (TP / (TP + FN))
+  - **F1-Score:** Media armónica de Precision y Recall, útil para clases desbalanceadas.
+- **Confusion Matrix:** Tabla que visualiza el rendimiento, mostrando cuántas veces se predijo correctamente cada clase y cómo se confundieron las clases incorrectas (verdaderos positivos, falsos positivos, verdaderos negativos, falsos negativos).
+- **Simulated ROI & Sharpe Ratio:** Se calculó un retorno simulado aplicando las señales de compra/venta del modelo al retorno real futuro en el conjunto de prueba. A partir de estos retornos simulados, se calculó el ROI total acumulado (compuesto) y el Sharpe Ratio anualizado (asumiendo tasa libre de riesgo de 0) para estimar la rentabilidad ajustada al riesgo de la estrategia modelada.
+- **Feature Importance:** Se extrajo la importancia de cada característica según el modelo Random Forest, indicando qué features contribuyeron más a las decisiones del modelo.
+
+El modelo entrenado (`proyecto_model.joblib`) y el scaler (`feature_scaler.joblib`) solo se guardan si la precisión en el conjunto de prueba supera un umbral predefinido (actualmente 52%), asegurando un mínimo de calidad antes de su uso por el bot.
+
 ## Ejecución del Bot (`main.py`)
 
 Una vez que el entrenamiento haya finalizado y los archivos `proyecto_model.joblib` y `feature_scaler.joblib` se hayan guardado:
@@ -132,4 +188,5 @@ Usa este proyecto de forma responsable y bajo tu propio riesgo.
 - `strategies.py`: Defines trading strategies
 - `utils.py`: Utility functions for data processing and analysis
 - `.env.example`: Example environment variables file
+
 # binance_futures_bot
