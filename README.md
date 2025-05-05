@@ -135,6 +135,51 @@ El rendimiento del modelo entrenado se evaluó en el conjunto de prueba (datos n
 
 El modelo entrenado (`proyecto_model.joblib`) y el scaler (`feature_scaler.joblib`) solo se guardan si la precisión en el conjunto de prueba supera un umbral predefinido (actualmente 52%), asegurando un mínimo de calidad antes de su uso por el bot.
 
+## Interpretación de los Resultados del Entrenamiento
+
+Después de ejecutar `python train_model.py`, obtendrás una salida detallada en la terminal. Aquí te explicamos qué significan las partes más importantes, usando los resultados de ejemplo proporcionados:
+
+1.  **Inicio y Carga de Datos:**
+
+    - El script inicia y confirma la descarga de datos históricos de Klines (velas de 15 min para BTCUSDT) y del índice Fear & Greed.
+    - Informa cuántos registros se obtuvieron (ej. `Fetched 116732 klines`, `Fetched 2647 F&G records`).
+
+2.  **Cálculo de Features y Target:**
+
+    - Confirma el cálculo de las 23 características (RSI, MACD, ATR, SMAs, F&G, Lags, etc.).
+    - Muestra la distribución de la variable objetivo (`target`) después de su creación (ej. `-1: 33.9%, 0: 33.8%, 1: 32.3%`), indicando qué tan balanceadas quedaron las clases de Vender/Mantener/Comprar antes de entrenar.
+
+3.  **Preparación y División de Datos:**
+
+    - Indica cuántas filas se eliminaron por tener valores `NaN` (ej. `Dropped 52 rows`). Esto es normal al inicio por el cálculo de indicadores y lags.
+    - Informa el tamaño de los conjuntos de entrenamiento y prueba (ej. `Training set size: 93344, Test set size: 23336`).
+    - Confirma que las características fueron escaladas con `StandardScaler` y que el scaler se guardó (ej. `Scaler saved to feature_scaler.joblib`).
+
+4.  **Optimización de Hiperparámetros (`RandomizedSearchCV`):**
+
+    - La línea `Fitting 3 folds for each of 50 candidates, totalling 150 fits` es clave:
+      - **`50 candidates`**: Se probaron 50 combinaciones aleatorias de hiperparámetros (la "receta" del modelo).
+      - **`3 folds`**: Para cada combinación, se usó validación cruzada de 3 pasos (se divide el set de entrenamiento en 3, se entrena con 2 y se valida con 1, rotando). Esto ayuda a obtener una evaluación más robusta de qué tan buena es cada receta.
+      - **`150 fits`**: En total, se realizaron 150 pequeños entrenamientos/validaciones internas para encontrar la mejor combinación.
+    - `Best parameters found`: Muestra la combinación ganadora de hiperparámetros (ej. `{'max_depth': 50, ... 'n_estimators': 317}`).
+    - `Best cross-validation accuracy score`: Indica la precisión promedio (ej. `0.5122` o 51.2%) que obtuvo la mejor receta _durante la validación cruzada_ con los datos de entrenamiento.
+
+5.  **Evaluación Final del Modelo (en el Conjunto de Prueba):**
+
+    - `Test Set Accuracy (Tuned Model)`: **¡La métrica más importante!** Muestra la precisión del modelo final con los mejores parámetros al ser probado en datos _totalmente nuevos_ que no usó para entrenar (ej. `0.5558` o 55.6%). Este valor decide si el modelo se guarda o no.
+    - `Classification Report`: Desglosa el rendimiento por clase:
+      - `precision`: Qué tan preciso fue el modelo cuando _predijo_ una clase específica.
+      - `recall`: Qué porcentaje de las instancias _reales_ de una clase logró identificar el modelo.
+      - `f1-score`: Una media entre precisión y recall, útil para comparar el rendimiento general por clase.
+      - `support`: Cuántas instancias de cada clase había en el conjunto de prueba.
+    - `Confusion Matrix`: Una tabla que muestra exactamente cuántas predicciones fueron correctas (diagonal principal) y cómo se confundieron las incorrectas (fuera de la diagonal).
+    - `Feature Importances`: Lista las características que más influyeron en las predicciones del modelo (ej. `atr`, `fear_and_greed`, `volume_change_lag_3` fueron las más importantes en el ejemplo).
+
+6.  **Guardado del Modelo:**
+    - Si la `Test Set Accuracy` supera el umbral (52%), confirma que el modelo y el scaler se guardaron correctamente (ej. `Model and scaler saved successfully.`). Si no, mostrará una advertencia indicando que no se guardó.
+
+En resumen, esta salida te permite entender la calidad de los datos usados, cómo se encontró la mejor configuración para el modelo Random Forest, y qué tan bien se espera que funcione ese modelo final al predecir señales de trading en datos nuevos, basándose en métricas estándar de Machine Learning.
+
 ## Ejecución del Bot (`main.py`)
 
 Una vez que el entrenamiento haya finalizado y los archivos `proyecto_model.joblib` y `feature_scaler.joblib` se hayan guardado:
