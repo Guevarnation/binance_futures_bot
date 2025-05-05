@@ -879,36 +879,29 @@ class MLStrategy(Strategy):
         else:
              logger.warning(f"Received unknown signal from model: {signal}")
 
-# Make sure this line exists at the end or is updated if already present
-# This dictionary maps strategy names (used in CLI args) to classes
+# --- Strategy Factory ---
+
 STRATEGY_MAP = {
     'sma': SimpleMovingAverageStrategy,
     'rsi': RSIStrategy,
-    'proyecto': ProyectoStrategy, # Now points to the new RF-based strategy
-    'ml': MLStrategy, # Keep the generic ML strategy if needed, or remove if redundant
+    'proyecto': ProyectoStrategy,
 }
-# Ensure STRATEGY_MAP is defined or updated appropriately at the end of the file.
 
-def get_strategy(strategy_name, client, interval):
-    if strategy_name.lower() in STRATEGY_MAP:
-        StrategyClass = STRATEGY_MAP[strategy_name.lower()]
-        # Inspect the StrategyClass constructor to pass correct args
-        # This part needs refinement based on how args are passed from main.py
-        # Simple approach: Pass client and interval, use defaults for others
-        # More complex: Pass all relevant args from main.py if needed
+# Modify get_strategy to accept and pass kwargs
+def get_strategy(strategy_name: str, client: BinanceFuturesClient, interval: str, **kwargs):
+    """Factory function to get a strategy instance based on name."""
+    strategy_name_lower = strategy_name.lower()
+    if strategy_name_lower in STRATEGY_MAP:
+        strategy_class = STRATEGY_MAP[strategy_name_lower]
         try:
-             # Check if interval is expected by the constructor
-             import inspect
-             sig = inspect.signature(StrategyClass.__init__)
-             if 'interval' in sig.parameters:
-                 return StrategyClass(client=client, interval=interval)
-             else:
-                 # If interval is not in __init__ (like base Strategy maybe?)
-                 # Or handle strategies that don't need interval specifically
-                 return StrategyClass(client=client)
+            # Pass client, interval, and any other relevant kwargs
+            return strategy_class(client=client, interval=interval, **kwargs) 
+        except TypeError as e:
+            logger.error(f"Error initializing strategy '{strategy_name_lower}' with kwargs {kwargs}: {e}")
+            return None
         except Exception as e:
-             logger.error(f"Error initializing strategy {strategy_name}: {e}")
-             return None
+            logger.error(f"Unexpected error creating strategy '{strategy_name_lower}': {e}")
+            return None
     else:
-        logger.error(f"Unknown strategy: {strategy_name}")
+        logger.error(f"Unknown strategy name: {strategy_name}")
         return None 

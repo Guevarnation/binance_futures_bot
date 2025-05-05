@@ -76,18 +76,32 @@ def run_bot(strategy_name, symbol, interval, once):
         logger.error("Binance API key or secret key not found in environment variables.")
         return
 
-    # Initialize Binance Client
-    client = BinanceFuturesClient(api_key, api_secret, symbol=symbol)
-    if not client.test_connection():
-        logger.error("Failed to connect to Binance API.")
+    # Initialize Binance Client (keys are read from .env within the class __init__)
+    try:
+        client = BinanceFuturesClient()
+    except ValueError as e:
+        # This happens if API keys are missing in .env
+        logger.error(f"Error initializing Binance client: {e}")
         return
         
-    # Fetch initial balance for P&L tracking
-    initial_balance = client.get_account_usdt_balance()
-    if initial_balance is None:
-        logger.error("Could not fetch initial account balance. Exiting.")
+    # Set the symbol as an attribute AFTER initialization
+    client.symbol = symbol 
+    logger.info(f"Binance client initialized for symbol: {client.symbol}")
+
+    # Test connection by fetching balance
+    logger.info("Testing API connection by fetching account balance...")
+    initial_balance_info = client.get_account_balance() 
+    if not initial_balance_info: # Check if the balance dictionary is empty or None (indicates failure)
+        logger.error("Failed to connect to Binance API or fetch initial balance. Check API keys and permissions.")
         return
-    logger.info(f"Initial Account USDT balance: {initial_balance:.2f}")
+    
+    # Extract initial USDT balance for P&L tracking
+    initial_balance = initial_balance_info.get('USDT', 0.0) # Use .get() for safety
+    if initial_balance == 0.0 and 'USDT' not in initial_balance_info:
+         logger.warning("Could not find USDT balance in initial account info, starting P&L from 0.")
+         # Decide if this is acceptable or should be an error
+    
+    logger.info(f"Successfully connected. Initial Account USDT balance: {initial_balance:.2f}")
     start_time = datetime.now()
 
     # Create strategy instance using the factory function
